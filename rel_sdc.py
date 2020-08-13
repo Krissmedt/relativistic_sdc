@@ -33,6 +33,11 @@ class coll:
 
         self.c = c
 
+        self.predictor = False
+        if "predictor" in kwargs:
+            if kwargs["predictor"] == True:
+                self.predictor = True
+
         #Collocation solution stuff
         Ix = np.array([1,0])
         Iv = np.array([0,1])
@@ -89,8 +94,11 @@ class coll:
         self.Rx = np.zeros((K+1,M),dtype=np.float)
         self.Rv = np.zeros((K+1,M),dtype=np.float)
 
+        self.IV = np.zeros((nq,3),dtype=np.float)
+        self.IF = np.zeros((nq,3),dtype=np.float)
 
-    def calc_residual(self,k):
+
+    def calc_residual_2018(self,k):
         s = self
         q =  self.Qmat
         M = s.M
@@ -102,8 +110,8 @@ class coll:
                 qvsum += q[m,j] * G(s.u[j,:,:],c=self.c)
                 qfsum += q[m,j] * s.F[j,:,:]
 
-            s.Rx[k-1,m-1] = np.linalg.norm(s.x[0,:,:] + qvsum - s.x[m,:,:])
-            s.Rv[k-1,m-1] = np.linalg.norm(s.u[0,:,:] + qfsum - s.u[m,:,:])
+            s.Rx[k,m-1] = np.linalg.norm(s.x[0,:,:] + qvsum - s.x[m,:,:])
+            s.Rv[k,m-1] = np.linalg.norm(s.u[0,:,:] + qfsum - s.u[m,:,:])
 
 
 
@@ -122,84 +130,119 @@ def boris_SDC(pos,vel,coll):
     dm =  coll.delta_m
 
     ## Populate node solutions with x0, v0, F0 ##
-    coll.x0 = pos
-    coll.u0 = vel
-    coll.F0 = F(vel,E(pos,q=qe),B(pos,q=qe),c=c)
-    for m in range(0,M+1):
-        coll.x[m,:,:] = coll.x0
-        coll.u[m,:,:] = coll.u0
-        coll.F[m,:,:] = coll.F0
+    coll.x[0,:,:] = pos
+    coll.u[0,:,:] = vel
+    coll.F[0,:,:] = F(vel,E(pos,q=qe),B(pos,q=qe),c=c)
 
-    #############################################
+    coll.xn[0,:,:] = coll.x[0,:,:]
+    coll.un[0,:,:] = coll.u[0,:,:]
+    coll.Fn[0,:,:] = coll.F[0,:,:]
 
-    coll.xn[:,:,:] = coll.x[:,:,:]
-    coll.un[:,:,:] = coll.u[:,:,:]
-    coll.Fn[:,:,:] = coll.F[:,:,:]
-    coll.calc_residual(1)
+    coll.IV = 0
+    coll.IF = 0
+
+    ###### Initial Step #########################
+    v_half = vel + 0.5*dm[0]*F(vel,E(pos,q=qe),B(pos,q=qe),c=c)
+    coll.x[1,:,:] = pos + dm[0]*G(v_half,c=c)
+
+    En         = 0.5*(E(pos) + E(coll.x[1,:,:]))*qe
+    Bn         = B(coll.x[1,:,:])*qe
+    gamma      = gu(coll.u[0,:,:],c=c)
+    c_1        = 0.5*dm[0]*np.cross(G(coll.u[0,:,:],c=c), B(coll.x[0,:,:]))*qe
+    c_2        = -(0.5*dm[0]/gamma)*np.cross(coll.u[0,:,:], Bn) + c_1
+    coll.u[1,:,:] = boris_daniel(coll.u[0,:,:],En,Bn,dm[0],c_2,gamma,q=1)
+    coll.F[1,:,:] = F(coll.u[0,:,:],E(coll.x[0,:,:]),B(coll.x[0,:,:]),c=c)
+
+    if coll.predictor == False:
+        coll.x[1,:,:] = coll.x[0,:,:]
+        coll.u[1,:,:] = coll.u[0,:,:]
+        coll.F[1,:,:] = coll.F[0,:,:]
+
+    ############################################
+    ######## Predictor Step ####################
+    for m in range(1,M):
+        v_half = coll.u[m,:,:] + 0.5*dm[m]*coll.F[m,:,:]
+        coll.x[m+1,:,:] = coll.x[m,:,:] + dm[m]*G(v_half,c=c)
+
+        En         = 0.5*(E(coll.x[m,:,:]) + E(coll.x[m+1,:,:]))*qe
+        Bn         = B(coll.x[m,:,:])*qe
+        gamma      = gu(coll.u[m,:,:],c=c)
+        c_1        = 0.5*dm[m]*np.cross(G(coll.u[m,:,:],c=c), B(coll.x[m,:,:]))*qe
+        c_2        = -(0.5*dm[m]/gamma)*np.cross(coll.u[m,:,:], Bn) + c_1
+        coll.u[m+1,:,:] = boris_daniel(coll.u[m,:,:],En,Bn,dm[m],c_2,gamma,q=1)
+        coll.F[m+1,:,:] = F(coll.u[m+1,:,:],E(coll.x[m+1,:,:]),B(coll.x[m+1,:,:]),c=c)
+
+        if coll.predictor == False:
+            coll.x[m+1,:,:] = coll.x[m,:,:]
+            coll.u[m+1,:,:] = coll.u[m,:,:]
+            coll.F[m+1,:,:] = coll.F[m,:,:]
+
+    coll.calc_residual_2018(0)
 
     for k in range(1,K+1):
+        coll.IV = 0
+        coll.IF = 0
+
+        coll.xn[1,:,:] = coll.x[0,:,:] + coll.IV
+
+        En         = 0.5*(E(coll.x[0,:,:]) + E(coll.xn[1,:,:]))*qe
+        Bn         = B(coll.xn[1,:,:])*qe
+        gamma      = gu(coll.u[1,:,:],c=c)
+        c_1        = 0.5*dm[0]*np.cross(G(coll.u[0,:,:],c=c), B(coll.x[0,:,:]))*qe
+        c_1       += -0.5*dm[0]* (coll.F[0,:,:] + coll.F[1,:,:])
+        c_1       += coll.IF
+        c_2        = -(0.5*dm[0]/gamma)*np.cross(coll.u[0,:,:], Bn)
+        coll.un[1,:,:] = boris_daniel(coll.u[0,:,:],En,Bn,dm[0],c_2,gamma,q=1)
+        coll.Fn[1,:,:] = F(coll.un[1,:,:],E(coll.xn[1,:,:]),B(coll.xn[1,:,:]),c=c)
+
+        if coll.predictor == False:
+            coll.xn[1,:,:] = coll.x[1,:,:]
+            coll.un[1,:,:] = coll.u[1,:,:]
+            coll.Fn[1,:,:] = coll.F[1,:,:]
+
         for m in range(coll.ssi,M):
             # Calculate collocation terms required for pos update
-            IV = 0
+            coll.IV = 0
             for j in range(1,M+1):
-                IV += (q[m+1,j]-q[m,j])*G(coll.u[j,:,:],c=c)
+                coll.IV += (q[m+1,j]-q[m,j])*G(coll.u[j,:,:],c=c)
+
+            v_half = coll.u[m,:,:] + 0.5*dm[m]*coll.F[m,:,:]
+            vn_half = coll.un[m,:,:] + 0.5*dm[m]*coll.Fn[m,:,:]
 
             ### POSITION UPDATE FOR NODE m/SWEEP k ###
             coll.xn[m+1,:,:] = coll.xn[m,:,:]
-            coll.xn[m+1,:,:] += dm[m]* (G(coll.un[m,:,:]+dm[m]/2 * coll.Fn[m,:,:],c=c)-G(coll.u[m,:,:]+dm[m]/2 * coll.F[m,:,:],c=c))
-            coll.xn[m+1,:,:] += IV
-
-            ##########################################
-
-            #Sample the electric field at the half-step positions (yields form Nx3)
-            half_E = (E(coll.xn[m,:,:],q=qe)+E(coll.xn[m+1,:,:],q=qe))/2
+            coll.xn[m+1,:,:] += dm[m]* (G(vn_half,c=c)-G(v_half,c=c))
+            coll.xn[m+1,:,:] += coll.IV
 
             # Calculate collocation terms required for pos update
-            IF = 0
+            coll.IF = 0
             for j in range(1,M+1):
-                IF += (q[m+1,j]-q[m,j])*coll.F[j,:,:]
+                coll.IF += (q[m+1,j]-q[m,j])*coll.F[j,:,:]
 
-            Bn = B(coll.xn[m+1,:,:],q=qe)
-            gamma = gu(coll.u[m+1,:,:],c=c)
-            c_1             = 0.5*dm[m]*np.cross(G(coll.un[m,:,:],c=c),B(coll.xn[m,:,:],q=qe))
-            c_1            += -0.5*dm[m]*(coll.F[m+1,:,:] + coll.F[m,:,:])
-            c_1            += IF
-            c_2             = -(0.5*dm[m]/gamma[:,np.newaxis])*np.cross(coll.un[m,:,:],Bn) + c_1
+            En         = 0.5*(E(coll.xn[m+1,:,:]) + E(coll.xn[m,:,:]))*qe
+            Bn         = B(coll.xn[m+1,:,:])*qe
+            gamma      = gu(coll.u[m+1,:,:],c=c)
 
-            # c = -1/2 * (coll.F[m,:,:]+coll.F[m+1,:,:]) + 1/dm[m]*IF
-            # c += -1/2 * np.cross(G(coll.un[m,:,:],c=c),Bn_m)
-            #
-            # c += 1/2 * np.cross(G(coll.un[m,:,:],c=c),Bn)
+            c_1        = 0.5*dm[m]*np.cross(G(coll.un[m,:,:],c=c), B(coll.xn[m,:,:]))*qe
+            c_1       += -0.5*dm[m]* (coll.F[m+1,:,:] + coll.F[m,:,:])
+            c_1       += coll.IF
+            c_2        = -(0.5*dm[m]/gamma)*np.cross(coll.un[m,:,:], Bn) + c_1
+            coll.un[m+1,:,:] = boris_daniel(coll.un[m,:,:],En,Bn,dm[m],c_2,gamma,q=qe)
+            coll.Fn[m+1,:,:] = F(coll.un[m+1,:,:],E(coll.xn[m+1,:,:]),B(coll.xn[m+1,:,:]),c=c)
+            # sol = scop.root(rootF,v_old.ravel(),args=(v_old,half_E,Bn,dm[m]),tol=10**-14,jac=False)
+            # v_new = sol.x.reshape(v_old.shape)
 
-            # cd = - dm[m]/2 * np.cross(G(coll.un[m,:,:],c=c),Bn_m) - dm[m]/2 * (coll.F[m,:,:]+coll.F[m+1,:,:]) + IF
-            # c = cd - np.cross(G(coll.un[m,:,:],c=c),Bn)
 
-            #Resort all other 3d vectors to shape Nx3 for use in Boris function
-            v_old = coll.un[m,:,:]
 
-            ### VELOCITY UPDATE FOR NODE m/SWEEP k ###
-            # v_new = boris(pos,v_old,half_E,Bn,dm[m],ck=c)
-            coll.un[m+1,:,:] = boris_daniel(coll.un[m,:,:],half_E,Bn,dm[m],c_2,gamma)
+        coll.F = np.copy(coll.Fn[:,:,:])
+        coll.x = np.copy(coll.xn[:,:,:])
+        coll.u = np.copy(coll.un[:,:,:])
+        coll.calc_residual_2018(k)
 
-            ##########################################
-            ### LORENTZ UPDATE FOR NODE m/SWEEP k ###
-            pos = np.copy(coll.xn[m+1,:,:])
-            vel = np.copy(coll.un[m+1,:,:])
-            coll.Fn[m+1,:,:] = F(vel,E(coll.xn[m+1,:,:]),B(coll.xn[m+1,:,:]),c=c,q=qe)
-
-        coll.F[:,:,:] = coll.Fn[:,:,:]
-        coll.x[:,:,:] = coll.xn[:,:,:]
-        coll.u[:,:,:] = coll.un[:,:,:]
-
-        coll.calc_residual(k)
+    pos = np.copy(coll.xn[m+1,:,:])
+    vel = np.copy(coll.un[m+1,:,:])
 
     return pos, vel, coll
-
-
-def G(um,c=1):
-    gamma = gu(um,c=c)
-    vm = um/gamma[:,np.newaxis]
-    return vm
 
 
 def Gdot(um,Fm):
