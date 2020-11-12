@@ -1,6 +1,5 @@
 import numpy as np
-from rvv_functions import *
-from rvv_fields import *
+from pushers.gammafac import *
 
 def boris(u,E,B,dt,q=-1,ck=0,c=1):
     um = u + dt/2 * (q*E/1 + ck)
@@ -23,6 +22,7 @@ def boris_daniel(v,E,B,dt,ck,gamma,q=-1):
     v_min = v + 0.5*dt*q*E + 0.5*ck
     v_star  = v_min + np.cross(v_min, t)
     v_plus  = v_min + np.cross(v_star, s)
+
     return v_plus + 0.5*dt*q*E + 0.5*ck
 
 
